@@ -238,14 +238,14 @@ byte GetWiredState () {
   bool tooright = !digitalRead(5);
   // the following logic enables to control search for contact and driving with contact
 
-  /* ToDo: me!
+  
   if (voltage > 650)
-    digitalWrite(13, LOW); //successfully connecet turn loading on
+    digitalWrite(13, LOW); //successfully connecet turn wire power on
   else
     digitalWrite(13, HIGH); //not connected
-    */
+    
 
-  if ((voltage > 725) || (IsDriving && (voltage > 650) )) {
+  if ((voltage > 700) || (IsDriving && (voltage > 650) )) {
     if (toohigh && !tooleft && !tooright)
       return 0;
     if (!toohigh && !tooleft && !tooright)
