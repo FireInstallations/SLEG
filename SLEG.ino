@@ -74,6 +74,9 @@ byte StablelizerCounter; //counts how many failed attemts of correcting the arm 
 */
 bool JoystickMode = false;
 
+// makes every secound an beeping sound if the accu is to low
+bool ShouldLowAccuBeep = false;
+
 void setup() {
   pinMode(A6, INPUT); // 3:1 voltage devider
   pinMode(A7, INPUT); // accu voltage
@@ -156,8 +159,23 @@ void loop() {
     Serial.println("IsDriving: " + (String)IsDriving);
     Serial.println("SPWMxold: " + (String)SPWMxold);
 
+    Serial.println("WireState: " + (String)GetWiredState());
+
     Serial.println();
     printDelay = millis();
+
+    if ((analogRead(A7) < 950) && (getLastDiget(GetWiredState()) == 0)) {
+      if (ShouldLowAccuBeep)
+        digitalWrite(13, LOW);
+      else
+        digitalWrite(13, HIGH);
+
+      ShouldLowAccuBeep = !ShouldLowAccuBeep;
+
+    } else if (!ShouldLowAccuBeep) {
+      digitalWrite(13, HIGH);
+      ShouldLowAccuBeep = false;
+    }
   }
 
   AutoWiring();
@@ -198,7 +216,7 @@ void Homing() {
 
     case 1: // start sequence move y
       StablelizerTryReconnect = false;
-      
+
       if (!JoystickMode) { // disable all BT-input if Joystick is controling the arm
         BTEnable = false;
       } else {
@@ -229,8 +247,6 @@ void Homing() {
         } else {
           ButtonEnable = true; // enable just button input if we are currintly driving
         }
-
-        Serial.flush();
       }
       break;
   }
@@ -262,7 +278,7 @@ void AutoWiring() {
       delay(1000);
       AutoWireProgress = 0;
       if (getLastDiget(GetWiredState()) == 0) //if not connected
-        HomeProgress = 1;
+        HomeProgress = 1; // return home
       break;
   }
 }
@@ -504,7 +520,7 @@ void HandleJoystick (int armAngle, byte armelongation) {
     if (SValy > 0) { //forward
       digitalWrite(8, LOW);
       digitalWrite(12, LOW); //start moving
-    } else if ((SValy < 0) && (getLastDiget(GetWiredState()) == 0))  { //backward
+    } else if ((SValy < 0) && (GetWiredState() == 100))  { //backward if  arm is not attached
       digitalWrite(8, HIGH);
       digitalWrite(12, LOW); //start moving
     }  else {//stop
