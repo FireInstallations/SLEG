@@ -58,7 +58,7 @@ bool AutoOverheadConnect = false;
 byte OverheadConnectingState = 0;
 
 
-byte fwbw = 1; // values have to be substracet by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
+byte fwbw = 1; // values have to be substracted by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
 void setup() {
   pinMode(A6, INPUT); // 3:1 voltage devider
   pinMode(A7, INPUT); // accu voltage
@@ -130,14 +130,14 @@ void loop() {
         HandleOverheadConnection ();
       break;
   }
-  
+
   if ((AutoOverheadConnect) && (OverheadConnectingState > 30) && (OverheadConnectingState != 255)) {
     HandleOverheadConnection ();
   }
 
   if (millis() - printDelay > 1000) {
     Serial.println("wired detected    " + (String)analogRead(A6));
-    // Serial.println("Accu voltage    " + (String)analogRead(A7));
+    Serial.println("Accu voltage    " + (String)analogRead(A7));
     Serial.println("too high   " + (String)digitalRead(6));// low active
     /* Serial.println("too far right   " + (String)digitalRead(5));// low active
       Serial.println("too far left   " + (String)digitalRead(7));// low active*/
@@ -160,7 +160,7 @@ void HandleOverheadConnection () {
       TempY = round((float)map(YConnect, SERVOMIN + 30, SERVOMAX, 0, 1000) / 2.0);
       SPWMy = map(TempY, 0, 1000, SERVOMIN + 30, SERVOMAX);
 
-      if (abs(SPWMy - SPWMyold) == 0)  //if we readched it next state
+      if (abs(SPWMy - SPWMyold) == 0)  //if we reached it next state
         OverheadConnectingState = 2;
 
       break;
@@ -169,7 +169,7 @@ void HandleOverheadConnection () {
       SPWMx = XConnect;
 
       if (abs(SPWMx - SPWMxold) == 0)
-        OverheadConnectingState = 3; //if we readched it next state
+        OverheadConnectingState = 3; //if we reached it next state
 
       break;
 
@@ -177,7 +177,7 @@ void HandleOverheadConnection () {
       SPWMy = YConnect;
 
       if (abs(SPWMy - SPWMyold) == 0)
-        OverheadConnectingState = 4; //if we readched it next state
+        OverheadConnectingState = 4; //if we reached it next state
 
       break; //if we are lucky our last coordinates do fit and we are connected now
 
@@ -186,13 +186,13 @@ void HandleOverheadConnection () {
       break;
 
     /********************** -{ deconnecting }- **********************/
-    case 31: //start deconnecting by movint to 1/2 YConnect
+    case 31: //start deconnecting by moving to 1/2 YConnect
       TempY = round((float)map(SPWMyold, SERVOMIN + 30, SERVOMAX, 0, 1000) / 2.0);
       SPWMy = map(TempY, 0, 1000, SERVOMIN + 30, SERVOMAX);
 
       //PWMOld werte statt dessen verwenden!
 
-      if (abs(SPWMy - SPWMyold) == 0) {  //if we readched it next state
+      if (abs(SPWMy - SPWMyold) == 0) {  //if we reached it next state
         OverheadConnectingState = 32;
 
       }
@@ -202,14 +202,14 @@ void HandleOverheadConnection () {
       SPWMx = SERVOMIDDLE;
 
       if (abs(SPWMx - SPWMxold) == 0) {
-        OverheadConnectingState = 33; //if we readched it next state
+        OverheadConnectingState = 33; //if we reached it next state
       }
       break;
 
     case 33:
       SPWMy = SERVOMIN + 30;
       if (abs(SPWMy - SPWMyold) == 0) {
-        OverheadConnectingState = 0; //if we readched it default
+        OverheadConnectingState = 0; //if we reached it default
         AutoOverheadConnect = false;
       }
       break;
@@ -221,7 +221,7 @@ byte getOverheadConnectorState () {
   if ((analogRead(A6) > 735) && digitalRead(6)) {
     return 0; //connected
   } else if (analogRead(A6) > 700) {
-    return 1; //to low
+    return 1; //too low
   } else
     return 2; //not connected
 }
