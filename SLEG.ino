@@ -1,5 +1,5 @@
 /*This program controls the SLEG via a bluetooth joystick (use it in landscape mode)
-   it is equipped with 3 servos, two for the arm control and one for directing the bus
+   it is equipped with 3 servos, two for the arm (panthograph) control and one for directing the bus
    the bus electronics is removed, forward and backward movement is cotrolled by relays
    for details refer to the electronic scheme
 
@@ -27,7 +27,7 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNECT BT TX PIN TO ARDUINO 10 PIN
 #define SERVOMIN 136
 #define SERVOMAX 539
-#define SERVOMIDDLE 337
+#define SERVOMIDDLE 395
 #define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
 
 int SValx;
@@ -64,13 +64,12 @@ void setup() {
   pwm.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates
   SValx = 0;
   SValy = 0;
-  SPWMx = map(SValx, -100, 100, SERVOMIN, SERVOMAX);
-  SPWMy = map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
+  SPWMx = SERVOMIDDLE;
+  SPWMy = SERVOMIN + 30;
   SPWMxold = SPWMx;
   SPWMyold = SPWMy;
-  Serial.print((String)SPWMy + "    ");
-  Serial.println(SPWMyold);
-  BTSerial.begin(9600);  // HC-05 speed set in AT command mode
+
+  BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   buttonDelay = millis(); // wait 200ms for next button value
 
   delay(200);
@@ -95,7 +94,7 @@ void loop() {
     }
     Serial.flush();
     val = "";
-    } else {
+  } else {
     // slowly return drive direction back to 0.
     if ((resetSDirect) && (SDirect != 0)) {
       SDirect *= 0.9;
@@ -104,13 +103,13 @@ void loop() {
       int SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
       pwm.setPWM(8, 0, SPWMDirect);
 
-      Serial.println("SDirect: " + (String)SDirect);
+      //Serial.println("SDirect: " + (String)SDirect);
     }
-    }
-  
+  }
+
   Smove();
-  Serial.print((String)SPWMy + "    ");
-  Serial.println(SPWMyold);
+  //Serial.print((String)SPWMy + "    ");
+  //Serial.println(SPWMyold);
   //delay(50);
 }
 
@@ -178,46 +177,58 @@ void HandleJoystick (int armAngle, byte armspeed) {
   // compute x and y
   SValx = armspeed * cos(float(armAngle * PI / 180));
   SValy = armspeed * sin(float(armAngle * PI / 180));
-  //Serial.println("SValx= " + (String)SValx + "SValxold= " + (String)SValxold + "   SValy= " + (String)SValy);
+  //Serial.println("SValx= " + (String)SValx + "   SValy= " + (String)SValy);
   if (SValy < 0) SValy = 0;
   if (SValx != SValxold) {
     //Serial.println("xxx");
+    if (SValx <= 0)
+      SPWMx = map(SValx, 0, -100, SERVOMIDDLE, SERVOMAX);
+    else
+      SPWMx = map(SValx, 100, 0, SERVOMIN, SERVOMIDDLE);
 
-    SPWMx = map(SValx, 100, -100, SERVOMIN, SERVOMAX);
-    SPWMx = round(min(SPWMx, SERVOMAX - 60)); //don't hit the screw
     SValxold = SValx;
+    //Serial.println("SPWMx= " + (String)SPWMx + "   SPWMy= " + (String)SPWMy);
   }
   if (SValy != SValyold) {
-    Serial.println("yyy");
+
 
     SPWMy =  map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
     SValyold = SValy;
   }
 }
 
-void Smove( void) {
+/*if ((resetSDirect) && (SDirect != 0)) {
+      SDirect *= 0.9;
+      SDirect = (int)(SDirect / 10.0) * 10;
+
+      int SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+      pwm.setPWM(8, 0, SPWMDirect);
+
+      //Serial.println("SDirect: " + (String)SDirect);
+    }*/
+
+void Smove() {
 
   if (SPWMx > SPWMxold) {
     SPWMxold++;
     pwm.setPWM(0, 0, SPWMxold);
-    delay(10);
+    delay(5);
 
-    } else if (SPWMx < SPWMxold) {
+  } else if (SPWMx < SPWMxold) {
     SPWMxold--;
     pwm.setPWM(0, 0, SPWMxold);
-    delay(10);
+    delay(5);
 
-    }
+  }
   if (SPWMy > SPWMyold) {
     SPWMyold++;
     pwm.setPWM(4, 0, SPWMyold);
-    delay(10);
+    delay(3);
 
   } else if (SPWMy < SPWMyold) {
     SPWMyold--;
     pwm.setPWM(4, 0, SPWMyold);
-    delay(10);
+    delay(3);
 
   }
-
 }
