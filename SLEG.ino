@@ -58,7 +58,7 @@ void setup() {
 void loop() {
   if (BTSerial.available()) {
     String val = BTSerial.readStringUntil('#');
-    //Serial.println(BTSerial.read());
+    Serial.println(BTSerial.read());
     // cited from the description in "Arduino Joystick" App
     if (val.length() == 7) {
       int armAngle = val.substring(0, 3).toInt();
