@@ -40,7 +40,7 @@ int SPWMxold;
 int SPWMy;
 int SPWMyold;
 
-unsigned long buttonDelay;
+unsigned long buttonDelay, printDelay;
 int SDirect = 0;// Servo value of bus direction
 int SPWMDirect;
 int SPWMDirectold;
@@ -59,6 +59,8 @@ void setup() {
   pinMode(7, INPUT_PULLUP); // Pantograph too high, lower endswitch active, move down
   pinMode(6, INPUT_PULLUP); // Pantograph too far left,right endswitch active, move right
   pinMode(5, INPUT_PULLUP); // Pantograph too far right,left endswitch active, move left
+  pinMode(3, OUTPUT); // velocity control
+  analogWrite(3, 80); // set velocity
   Serial.begin(9600);
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
@@ -74,6 +76,7 @@ void setup() {
 
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   buttonDelay = millis(); // wait 200ms for next button value
+  printDelay = millis(); // toimer for printing
 
   delay(200);
 }
@@ -100,6 +103,15 @@ void loop() {
 
   }
   Smove();
+  if (millis() - printDelay > 1000) {
+    Serial.println("wired detected    " + (String)analogRead(A6));
+    Serial.println("Accu voltage    " + (String)analogRead(A7));
+    Serial.println("too high   " + (String)digitalRead(6));// low active
+    Serial.println("too far right   " + (String)digitalRead(5));// low active
+    Serial.println("too far left   " + (String)digitalRead(7));// low active
+    Serial.println();
+    printDelay = millis();
+  }
 }
 
 void HandleButton(int buttonVal) {
