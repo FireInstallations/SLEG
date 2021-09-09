@@ -97,6 +97,7 @@ void setup() {
   SPWMDirect = round(map(0, -90, 90, SERVOMIN, SERVOMAX));
   SPWMDirectold = SPWMDirect;
 
+  pinMode(4, INPUT); // High if BT connected
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   printDelay = millis(); // timer for printing
   SmoveDelayTime = millis();
@@ -133,16 +134,13 @@ void loop() {
 
     Serial.println("wired detected    " + (String)analogRead(A6));
     Serial.println("Accu voltage    " + (String)analogRead(A7));
-    Serial.println("too high   " + (String)digitalRead(6));// low active
-    /* Serial.println("too far right   " + (String)digitalRead(5));// low active
-      Serial.println("too far left   " + (String)digitalRead(7));// low active*/
     Serial.println("Wired State    " + (String)GetWiredState()  );
     Serial.println("joystick Y: " + (String)SPWMy  );
     Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
     Serial.println("HomeProgress   " + (String)HomeProgress);
     Serial.println("JoystickMode: " + (String)JoystickMode);
     Serial.println("IsDriving: " + (String)IsDriving);
-    Serial.println("GetWiredState(): " + (String)GetWiredState());
+    Serial.println("SPWMxold: " + (String)SPWMxold);
 
     Serial.println();
     printDelay = millis();
@@ -151,7 +149,7 @@ void loop() {
   AutoWiring();
 
   // store values if properly connected and disable joystick
-  if (GetWiredState() == 0) {
+  if (getLastDiget(GetWiredState()) == 2) {
     XConnect = SPWMxold;
     YConnect = SPWMyold;
     FoundPos = true;
@@ -160,6 +158,21 @@ void loop() {
   }
 
   if (millis() - SmoveDelayTime >= SmoveMinDelay) {
+    if ((JoystickMode) && (!digitalRead(4))) { // if we are potentially moving but loosing BT connection, just stop the bus.
+      IsDriving = false; // set the state to currently standing.
+      analogWrite(3, 0); // set velocity to 0.
+      digitalWrite(12, HIGH); //Stop moving
+
+      Serial.println("Awww man, I lost control again! :/");
+    }
+
+    if ((false) && (IsDriving)) {
+      stabilizer ();
+    }
+
+    //Todo stabilizer aufrufen und connected flag
+    //Todo: connectedflag nach vorbild joystick blocked flag erstellen
+
     Smove();
     SmoveDelayTime = millis();
   }
@@ -224,44 +237,157 @@ void AutoWiring() {
     case 4: // check if sufficiently wired
       delay(1000);
       AutoWireProgress = 0;
-      if (GetWiredState() == 6)
+      if (getLastDiget(GetWiredState()) == 0) //if not connected
         HomeProgress = 1;
       break;
   }
 }
 
-
 byte GetWiredState () {
+  /*  returns a 3 diget number, which is build of the x and y states and a state indiffer (xys).
+      x relates to the state of the arm in horicontal direction, y in vertical direction,
+      s is an shortcut if you just want to know if we are properly connecet or not at all.
+      these 2 states are importend to know at different times in the program.
+      so 231 corresponds to x == 2, y == 3 and s == 1.
+      the states start with 0 and going by integer increments up to 2 for x and s, while for y up to 3.
+
+      plan x/y    | x/y written out | s for same x/y values
+      ------------|-----------------|----------------------
+          y       |                 |
+          3       |       03 13 23  |  0 0 0
+          2       | ^     02 12 22  |  1 2 1
+      x 0 1 2 x   | |     01 11 21  |  1 1 1
+          0       | y     00 10 20  |  0 0 0
+          y       |   x ->          |
+                 <=>               ==>
+
+
+      x == 0 means the arm is too far left, while x == 2 means it is to far right.
+      y == 2 and y == 3 mean the arm is too far up.
+      these 4 possible states are determined by the limit switches of the arm.
+      the secound information in the return value is if  the arm is connected to the power line.
+      if it is but the limit switch  is turned on, y has a value of 2,
+      if the switch is on but the mesured voltage is to low it goes up to 3.
+      this usually means we missed the right spot for the arm o and we are far to high, stuck at
+      the left or right powerline.
+      if no limit switch is on and we have a high enough volate the return number will be 11 (x == 1 & y == 1),
+      this is the perfect state an we allways want to reach it.
+      y == 0 means the y switch didn't trigger and the voltage doesn't fit. It could indicate we are just a bit too
+      low, but we don't now for sure. There is no simple way of nowing if there is even a line at this point
+      and therefor no simple way of resolving it. In the stabilizer subrutine we will try to move up a bit,
+      but if this fails we will return home, similar to case y == 3.
+      s is 0 if the voltage is to low, so no real connection was found (y == 0 or y == 3).
+      if we are at a good spot to return to (connectet and upper limit switch is on since the automatic rewirering
+      mostly doesn't reach as high) s will have the value of 2.
+      if we are technically at the sweet spot for the arm or just a bit of s will have the default value of 1.
+
+      x y | s | translates to                                                         | means                                                 | recommendation of resolvage
+      ----|-----------------------------------------------------------------------|-------------------------------------------------------|------------------------------------------------------------------------------
+      0 0 | 0 | left limit switch triggert; no votage; upper good                     | too low and too left or left of both power lines      | move gently up and right, if it not helps return home
+      0 1 | 1 | left limit switch triggert; voltage good; upper good                  | good spot, just a bit too left                        | move right
+      0 2 | 1 | left limit switch triggert; voltage good; upper switch  triggert      | good spot, just too left and high                     | move right and a bit down
+      0 3 | 0 | left limit switch triggert; no voltage; upper limit switch  triggert  | missed the lines, now too high and left               | return home
+      1 0 | 0 | x good; no voltage; upper switch goood                                | we have no idea where we are, since nothing indicates | try your luck and move up, if it not helps sacrifice a newborn or return home
+      1 1 | 1 | x good; voltage good; upper goood (=> y good)                         | perfect spot try to stay here!                        | touch nothing. No! not even this. just stop!
+      1 2 | 2 | x good; voltage good; upper switch  triggert                          | good spot, just too high                              | move a bit down
+      1 3 | 0 | x good; no voltage; upper switch triggert                             | missed the lines, now too high                        | return home
+      2 0 | 0 | right limit switch triggert; no votage; upper goood                   | too low and too right or right of both power lines    | move gently up and left, if it not helps return home
+      2 1 | 1 | right limit switch triggert; voltage good; upper goood                | good spot just too right                              | move left
+      2 2 | 1 | right limit switch triggert; voltage good; upper switch  triggert     | good spot just too right and high                     | move left and a bit down
+      2 3 | 0 | right limit switch triggert; no voltage; upper limit switch  triggert | missed the lines, now too high and right              | return home
+
+      to make it simple: we can handle erverything as long as y (the secound diget) is 1 or 2.
+      ---
+      the following logic enables to control search for contact and driving with contact
+  */
+
+  //ToDo achte auf Servo Min/Max limit beim Regler. Sollte darüber regeln nötig sein fahre home an.
+
   int voltage = analogRead(A6);
   bool toohigh = !digitalRead(6); // note that low means, that the switch is actuated
   bool tooleft = !digitalRead(7);
   bool tooright = !digitalRead(5);
-  // the following logic enables to control search for contact and driving with contact
 
-  
-  if (voltage > 650)
-    digitalWrite(13, LOW); //successfully connecet turn wire power on
-  else
-    digitalWrite(13, HIGH); //not connected
-    
+  byte result = 111; // lets think positiv and assume we are in the perfect spot.
 
-  if ((voltage > 700) || (IsDriving && (voltage > 650) )) {
-    if (toohigh && !tooleft && !tooright)
-      return 0;
-    if (!toohigh && !tooleft && !tooright)
-      return 1;
-    if (tooright)
-      return 2;
-    if (tooleft)
-      return 3;
-    if (toohigh)
-      return 4;
+  if (tooright) {
+    result -= 100; // x == 0
+  } else if (tooleft)
+    result += 100; // x == 2
+  // else x == 1; is default value
 
-    return 5;
+  if ((voltage > 725) || (IsDriving && (voltage > 650) )) {
+    if (toohigh) {
+      result += 10; //y == 2
+    } else {//y == 1; is default value
+      result += 1; // s == 2
+    }
+  } else if (toohigh) {
+    result += 20; //y == 3
+    result -= 1; // s == 0
+  } else {
+    result -= 10; //y == 0
+    result -= 1; // s == 0
+  }
 
-  } else
-    return 6; // not connected
+  return result;
 }
+
+void stabilizer () {
+  /*
+    trys to hold the arm at the wire if possible.
+    for more information about GetWiredState-numbers please reffer to the dokumentaion of GetWiredState.
+  */
+
+
+  //ToDo joystiock blockd = connected flag
+  //ToDo try oce to reconnect keep bounds in mind  if fails home
+
+
+  //ToDo: trete nur in aktion nachdem letzte aktion abgeschlossen oder abgebrochen wurde.
+  //entsprechen dedektiere  ob letzte aktion erfolgreich war
+  //SPWMy SPWMx
+
+  switch (GetWiredState ()) {
+    case 000: //left limit switch triggert; no votage; upper goood --> too low and too left or left of both power lines
+      // --> move gently up and right, if it not helps return home
+      break;
+    case 011: //left limit switch triggert; voltage good; upper good --> good spot, just a bit too left
+      // move right
+      SPWMx = constrain(SPWMx - SERVOMIN * 0.01, SERVOMIN, SERVOMAX);
+      break;
+    case 021: //left limit switch triggert; voltage good; upper switch  triggert --> good spot, just too left and high
+      //--> move right and a bit down
+      break;
+    case 030: //left limit switch triggert; no voltage; upper limit switch  triggert --> missed the lines, now too high and left
+    case 130: //x good; no voltage; upper switch triggert --> missed the lines, now too high
+    case 230: //right limit switch triggert; no voltage; upper limit switch  triggert --> missed the lines, now too high and right
+      HomeProgress = 1; //return home
+      break;
+    case 100: //x good; no voltage; upper switch goood --> we have no idea where we are, since nothing indicates
+      //try your luck and move up, if it not helps sacrifice a newborn or return home
+      break;
+    case 111: //x good; voltage good; upper goood (=> y good) --> perfect spot try to stay here!
+      break;
+    case 122: //x good; voltage good; upper switch  triggert --> good spot, just too high
+      //move a bit down
+      break;
+    case 200: //right limit switch triggert; no votage; upper goood --> too low and too right or right of both power lines
+      //move gently up and left, if it not helps return home
+      break;
+    case 211: //right limit switch triggert; voltage good; upper goood --> good spot just too right
+      //move left
+      break;
+    case 221: //right limit switch triggert; voltage good; upper switch  triggert --> good spot just too right and high
+      //move left and a bit down
+      break;
+    default:
+      Serial.println("[Stabbilizer] How did we get here?");
+      break;
+  }
+
+}
+
 
 void HandleButton(int buttonVal, int joyStrength) {
   switch (buttonVal) {
@@ -280,7 +406,7 @@ void HandleButton(int buttonVal, int joyStrength) {
     case 2: //" ◯ " joy drive
       if ((joyStrength == 0)) {  // if we are currintly moving ignore all input.
 
-        if (GetWiredState() == 6) { // if not connected but also not home return home
+        if (getLastDiget(GetWiredState()) == 0) { // if not connected but also not home return home
           if (!HomePos)
             HomeProgress = 1;
         }
@@ -291,7 +417,7 @@ void HandleButton(int buttonVal, int joyStrength) {
       break;
 
     case 3: //" ⃤ " Connect wire if position of wire known, not connected and also not moving
-      if ((!IsDriving) && (FoundPos) && (GetWiredState () == 6) )
+      if ((!IsDriving) && (FoundPos) && (getLastDiget(GetWiredState()) == 0) )
         AutoWireProgress = 1;
       break;
 
@@ -303,9 +429,9 @@ void HandleButton(int buttonVal, int joyStrength) {
 
 void HandleJoystick (int armAngle, byte armelongation) {
   /*
-     The Joystick dictates the movement of the hole bus (drive) OR
-     of the wire connector arm.
-     If JoystickMode happend to be true it is drive, if false arm.
+    The Joystick dictates the movement of the hole bus (drive) OR
+    of the wire connector arm.
+    If JoystickMode happend to be true it is drive, if false arm.
   */
 
   // compute x and y
@@ -326,7 +452,7 @@ void HandleJoystick (int armAngle, byte armelongation) {
     if (SValy > 0) { //forward
       digitalWrite(8, LOW);
       digitalWrite(12, LOW); //start moving
-    } else if ((SValy < 0) && (GetWiredState() == 6))  { //backward
+    } else if ((SValy < 0) && (getLastDiget(GetWiredState()) == 0))  { //backward
       digitalWrite(8, HIGH);
       digitalWrite(12, LOW); //start moving
     }  else {//stop
@@ -377,7 +503,7 @@ void Smove() {
     pwm.setPWM(0, 0, SPWMxold);
 
   }
-  if (SPWMy > SPWMyold) {
+  if (SPWMy > SPWMyold) { //up
     SPWMyold++;
     pwm.setPWM(4, 0, SPWMyold);
 
@@ -390,7 +516,7 @@ void Smove() {
     else
       SmoveMinDelay = SmoveDefaultDelay;
 
-  } else if (SPWMy < SPWMyold) {
+  } else if (SPWMy < SPWMyold) { //down
     SPWMyold--;
     pwm.setPWM(4, 0, SPWMyold);
 
@@ -411,7 +537,7 @@ void Smove() {
     pwm.setPWM(8, 0, SPWMDirectold);
 
   } else if (SPWMDirect < SPWMDirectold) {
-    SmoveMinDelay = 2; 
+    SmoveMinDelay = 2;
     SPWMDirectold --;
     pwm.setPWM(8, 0, SPWMDirectold);
   }
@@ -420,9 +546,14 @@ void Smove() {
 
 //returns only true if every char in String is a digit
 boolean isValidNumber(String str) {
-  bool OnlyDigit = true;
   for (char c : str) {
-    OnlyDigit = isDigit(c) && OnlyDigit;
+
+    if (!isDigit(c))
+      return false;
   }
-  return OnlyDigit;
+  return true;
+}
+
+byte getLastDiget (byte num) {
+  return num % 10;
 }
