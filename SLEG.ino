@@ -31,6 +31,8 @@ SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNEC
 #define SERVOMIDDLE 395
 #define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
 
+#define BUS_DEBUG true //Debug mode
+
 float SValx;
 float SValxold;// Servo value derived from Joystick value for x (horizontal arm value)
 float SValy;
@@ -40,6 +42,7 @@ int SPWMx;
 int SPWMxold;
 int SPWMy;
 int SPWMyold;
+long moveDelay;
 
 unsigned long buttonDelay, printDelay;
 int SDirect = 0;// Servo value of bus direction
@@ -57,9 +60,8 @@ bool BTEnable = true; // Enable Blue tooth
 bool FoundPos = false; // Position found
 bool HomePos = true; // Panthograph in home position
 
-
-
 byte fwbw = 1; // values have to be substracted by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
+
 void setup() {
   pinMode(A6, INPUT); // 3:1 voltage devider
   pinMode(A7, INPUT); // accu voltage
@@ -74,7 +76,7 @@ void setup() {
   pinMode(6, INPUT_PULLUP); // Pantograph too far left,right endswitch active, move right
   pinMode(5, INPUT_PULLUP); // Pantograph too far right,left endswitch active, move left
   pinMode(3, OUTPUT); // velocity control
-  analogWrite(3, 70); // set velocity
+  analogWrite(3, 80); // set velocity
   Serial.begin(9600);
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
@@ -91,11 +93,13 @@ void setup() {
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   buttonDelay = millis(); // wait 200ms for next button value
   printDelay = millis(); // toimer for printing
+  moveDelay = millis(); 
 
   delay(200);
 }
 void loop() {
-  if (BTSerial.available() && BTEnable) {
+
+  if (BTSerial.available() && BTEnable) { //!!!disables button and joystick, control via app  disabled!
     String val = BTSerial.readStringUntil('#');
     //Serial.println(BTSerial.read());
     // cited from the description in "Arduino Joystick" App
@@ -118,24 +122,25 @@ void loop() {
 
   }
 
+  if (BUS_DEBUG)
+    if (millis() - printDelay > 1000) {
+      
+        Serial.println("wired detected    " + (String)analogRead(A6));
+        Serial.println("Accu voltage    " + (String)analogRead(A7));
+        Serial.println("too high   " + (String)digitalRead(6));// low active
+        /* Serial.println("too far right   " + (String)digitalRead(5));// low active
+          Serial.println("too far left   " + (String)digitalRead(7));// low active*/
+      Serial.println("Wired State    " + (String)GetWiredState()  );
+        Serial.println("joystick Y: " + (String)SPWMy  );
+        Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
+        Serial.println("HomeProgress   " + (String)HomeProgress);
+        Serial.println();
+      printDelay = millis();
+    }
 
-  if (millis() - printDelay > 1000) {
-    Serial.println("wired detected    " + (String)analogRead(A6));
-    Serial.println("Accu voltage    " + (String)analogRead(A7));
-    Serial.println("too high   " + (String)digitalRead(6));// low active
-    /* Serial.println("too far right   " + (String)digitalRead(5));// low active
-      Serial.println("too far left   " + (String)digitalRead(7));// low active*/
-    Serial.println("Wired State    " + (String)GetWiredState()  );
-    Serial.println("joystick Y: " + (String)SPWMy  );
-    Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
-    Serial.println("HomeProgress   " + (String)HomeProgress);
-    Serial.println();
-    printDelay = millis();
-  }
-  delay(1);
 
-
-  //AutoWiring();
+  AutoWiring();
+  
   // store values if properly connected and disable joystick
   if (GetWiredState() == 0) {
     XConnect = SPWMxold;
@@ -144,60 +149,48 @@ void loop() {
     JoyStickEnable = false;
   }
 
+  if (millis() - moveDelay >= 6) {
+    Smove();
+    moveDelay = millis();
+  }
 
-  delay(10);
-  Smove();
-
-  if (MomeProgress > 0)Homing();
+  if (HomeProgress > 0)Homing();
 }
 
 void Homing() {
   switch (HomeProgress) {
 
     case 1: // start sequence move y
-
       JoyStickEnable = false;
-      BTEnable = false;
+      //BTEnable = false; //!!!becourse how joystick disabling is implemented is disables the buttons too
 
       SPWMy = 280;
-      HomeProgress++;
-
-      break;
-    case 2:
-      if (abs(SPWMy - SPWMyold) == 0) {
-        delay(1000);
+      if (abs(SPWMy - SPWMyold) == 0)
         HomeProgress++;
-      }
-      break;
-    case 3: // move x home
 
+      break;
+    case 2: // move x home
       SPWMx = SERVOMIDDLE;
-      HomeProgress++;
 
-      break;
-    case 4:
-      if (abs(SPWMx - SPWMxold) == 0) {
-        delay(1000);
+      if (abs(SPWMx - SPWMxold) == 0)
         HomeProgress++;
-      }
-      break;
-    case 5: // move y home and return to case 0
 
-      SPWMy = SERVOMIN + OFFSET;
-      HomeProgress++;
       break;
-    case 6:
+    case 3: // move y home and return to case 0
+      SPWMy = SERVOMIN + OFFSET;
+
       if (abs(SPWMy - SPWMyold) == 0) {
-        delay(1000);
+        //delay(1000);
+        HomeProgress = 0;
         HomePos = true;
         JoyStickEnable = true;
-        ButtonEnable = true;
+        //ButtonEnable = true;
         BTEnable = true;
       }
       break;
-
   }
 }
+
 void AutoWiring() {
   switch (AutoWireProgress) {
     case 0: // end of autowiring
@@ -208,17 +201,17 @@ void AutoWiring() {
       ButtonEnable = false;
       SPWMy = 200;
       if (abs(SPWMy - SPWMyold) == 0)
-        AutoWireProgress = 2;
+        AutoWireProgress++;
       break;
     case 2: // move x home
       SPWMx = XConnect;
       if (abs(SPWMx - SPWMxold) == 0)
-        AutoWireProgress = 3;
+        AutoWireProgress++;
       break;
     case 3: // move y home and return to case 0
       SPWMy = YConnect;
       if (abs(SPWMy - SPWMyold) == 0)
-        AutoWireProgress = 4;
+        AutoWireProgress++;
       break;
     case 4: // check if sufficiently wired
       delay(1000);
@@ -359,45 +352,39 @@ void Smove() {
   if (SPWMx > SPWMxold) {
     SPWMxold++;
     pwm.setPWM(0, 0, SPWMxold);
-    delay(5);
 
   } else if (SPWMx < SPWMxold) {
     SPWMxold--;
     pwm.setPWM(0, 0, SPWMxold);
-    delay(5);
 
   }
   if (SPWMy > SPWMyold) {
     SPWMyold++;
     pwm.setPWM(4, 0, SPWMyold);
-    delay(3);
-
-    if (SPWMy - SPWMyold < 20)
-      delay(3);
-    if (SPWMy - SPWMyold < 10)
-      delay(7);
+    /*
+        if (SPWMy - SPWMyold < 20)
+          delay(3);
+        if (SPWMy - SPWMyold < 10)
+          delay(7);*/
 
   } else if (SPWMy < SPWMyold) {
     SPWMyold--;
     pwm.setPWM(4, 0, SPWMyold);
-    delay(3);
-
-    if (SPWMyold - SPWMy < 20)
-      delay(3);
-    if (SPWMyold - SPWMy < 10)
-      delay(7);
+    /*
+        if (SPWMyold - SPWMy < 20)
+          delay(3);
+        if (SPWMyold - SPWMy < 10)
+          delay(7);*/
   }
 
   //driving  direction
   if (SPWMDirect > SPWMDirectold ) {
     SPWMDirectold ++;
     pwm.setPWM(8, 0, SPWMDirectold);
-    delay(1);
 
   } else if (SPWMDirect < SPWMDirectold) {
     SPWMDirectold --;
     pwm.setPWM(8, 0, SPWMDirectold);
-    delay(1);
   }
 
 }
