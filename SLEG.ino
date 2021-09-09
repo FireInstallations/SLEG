@@ -53,7 +53,7 @@ void setup() {
   pinMode(12, OUTPUT); // move low/ stop high
   digitalWrite(12, HIGH); // bus is stopped
   pinMode(13, OUTPUT); // if wired low
-  digitalWrite(9, HIGH); // not wired
+  digitalWrite(13, HIGH); // not wired
   pinMode(9, OUTPUT); // if load accu low
   digitalWrite(9, HIGH); // load is off
   pinMode(7, INPUT_PULLUP); // Pantograph too high, lower endswitch active, move down
@@ -98,7 +98,7 @@ void loop() {
     Serial.flush();
     val = "";
 
-  } 
+  }
   Smove();
 }
 
@@ -149,30 +149,32 @@ void HandleButton(int buttonVal) {
   }
 }
 
-void HandleJoystick (int armAngle, byte armspeed) {
+void HandleJoystick (int armAngle, byte armelongation) {
   // compute x and y
-  SValx = armspeed * cos(float(armAngle * PI / 180));
-  SValy = armspeed * sin(float(armAngle * PI / 180));
+  SValx = armelongation * cos(float(armAngle * PI / 180));
+  SValy = armelongation * sin(float(armAngle * PI / 180));
 
-  if ((SValy <= 10) && (armAngle != 0)) return;
+  if ((SValy <= 10) && (armAngle != 0)) return;// to avoid misssending from Joy Stick
 
 
-  if (SValx != SValxold) {
-    if (SValx <= 0)
-      SPWMx = map(SValx * 10, 0, -1000, SERVOMIDDLE, SERVOMAX);
-    else
-      SPWMx = map(SValx * 10, 1000, 0, SERVOMIN, SERVOMIDDLE);
+  SValxold = 0.9 * SValxold + 0.1 * SValx;
+  if (SValxold <= 0)
+    SPWMx = map(SValxold * 10, 0, -1000, SERVOMIDDLE, SERVOMAX);
+  else
+    SPWMx = map(SValxold * 10, 1000, 0, SERVOMIN, SERVOMIDDLE);
 
-    SValxold = SValx;
-  }
 
-  if (SValy < 0) SValy = 0;
-  if (SValy != SValyold) {
-    if (SValy != 0)
-      SValy = 0.9 * SValyold + 0.1 * SValy;
-    SPWMy =  map(SValy * 10, 0, 1000, SERVOMIN + 30, SERVOMAX);
-    SValyold = SValy;
-  }
+
+
+  if (SValy < 0) SValy = 0;// use only upper half of Joystickpad
+
+  if (SValy != 0) {
+    // gliding avarage as far as not return to zero is adviced
+    SValyold = 0.9 * SValyold + 0.1 * SValy;
+  } else SValyold = SValy;
+  SPWMy =  map(SValyold * 10, 0, 1000, SERVOMIN + 30, SERVOMAX);
+
+
 }
 
 void Smove() {
@@ -208,7 +210,7 @@ void Smove() {
     if (SPWMyold - SPWMy < 10)
       delay(7);
   }
-  
+
   //driving  direction
   if (SPWMDirect > SPWMDirectold ) {
     SPWMDirectold ++;
@@ -223,11 +225,11 @@ void Smove() {
 
 }
 
-//returns only true if every char in String is a diget
+//returns only true if every char in String is a digit
 boolean isValidNumber(String str) {
-  bool OnlyDiget = true;
+  bool OnlyDigit = true;
   for (char c : str) {
-    OnlyDiget = isDigit(c) && OnlyDiget;
+    OnlyDigit = isDigit(c) && OnlyDigit;
   }
-  return OnlyDiget;
+  return OnlyDigit;
 }
