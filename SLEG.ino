@@ -33,6 +33,12 @@ SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNEC
 
 #define SmoveDefaultDelay 6
 
+class WireStateStabilizerCache {
+  public:
+    byte LastWireState;
+    bool TryReconnect;
+};
+
 float SValx;
 float SValxold;// Servo value derived from Joystick value for x (horizontal arm value)
 float SValy;
@@ -50,6 +56,8 @@ int SDirect = 0;// Servo value of bus direction
 int SPWMDirect;
 int SPWMDirectold;
 
+unsigned long DebugTimerDELETEME;
+
 // position of last wire connection
 int XConnect = 0, YConnect = 0;
 
@@ -61,6 +69,8 @@ bool BTEnable = true; // Enable Blue tooth
 bool FoundPos = false; // Position found
 bool HomePos = true; // Panthograph in home position
 bool IsDriving = false; // are the weels moving?
+
+WireStateStabilizerCache StabilizerCache;
 
 /*
    JoysitckMode describes if the joystick moves the whole bus or the arm.
@@ -97,14 +107,25 @@ void setup() {
   SPWMDirect = round(map(0, -90, 90, SERVOMIN, SERVOMAX));
   SPWMDirectold = SPWMDirect;
 
+  StabilizerCache.TryReconnect = false;
+  StabilizerCache.LastWireState = 111;
+
   pinMode(4, INPUT); // High if BT connected
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   printDelay = millis(); // timer for printing
   SmoveDelayTime = millis();
+  DebugTimerDELETEME = millis();
+
 
   delay(200);
 }
 void loop() {
+
+  if (millis() - DebugTimerDELETEME > 5) {
+    // aus stellen
+    digitalWrite(13, HIGH);
+  }
+
   if (BTSerial.available() && BTEnable) { //!!!disables button and joystick, control via app  disabled!
     String val = BTSerial.readStringUntil('#');
     // cited from the description in "Arduino Joystick" App
@@ -149,12 +170,14 @@ void loop() {
   AutoWiring();
 
   // store values if properly connected and disable joystick
-  if (getLastDiget(GetWiredState()) == 2) {
+  if (getLastDiget(GetWiredState()) > 1) {
     XConnect = SPWMxold;
     YConnect = SPWMyold;
     FoundPos = true;
     if (!JoystickMode) // only disable the joystick if its currintly controling the arm.
       JoyStickEnable = false;
+
+    StabilizerCache.TryReconnect = true;
   }
 
   if (millis() - SmoveDelayTime >= SmoveMinDelay) {
@@ -166,12 +189,9 @@ void loop() {
       Serial.println("Awww man, I lost control again! :/");
     }
 
-    if ((false) && (IsDriving)) {
-      stabilizer ();
+    if (StabilizerCache.TryReconnect /*&& (IsDriving)*/) {
+      ArmStablelizer ();
     }
-
-    //Todo stabilizer aufrufen und connected flag
-    //Todo: connectedflag nach vorbild joystick blocked flag erstellen
 
     Smove();
     SmoveDelayTime = millis();
@@ -204,6 +224,7 @@ void Homing() {
       if (abs(SPWMy - SPWMyold) == 0) {
         HomeProgress = 0;
         HomePos = true;
+        StabilizerCache.TryReconnect = false;
         BTEnable = true;
 
         Serial.flush();
@@ -301,8 +322,6 @@ byte GetWiredState () {
       the following logic enables to control search for contact and driving with contact
   */
 
-  //ToDo achte auf Servo Min/Max limit beim Regler. Sollte darüber regeln nötig sein fahre home an.
-
   int voltage = analogRead(A6);
   bool toohigh = !digitalRead(6); // note that low means, that the switch is actuated
   bool tooleft = !digitalRead(7);
@@ -316,12 +335,11 @@ byte GetWiredState () {
     result += 100; // x == 2
   // else x == 1; is default value
 
-  if ((voltage > 725) || (IsDriving && (voltage > 650) )) {
+  if ((voltage > 650) || (IsDriving && (voltage > 725) )) {
     if (toohigh) {
       result += 10; //y == 2
-    } else {//y == 1; is default value
       result += 1; // s == 2
-    }
+    } //y == 1 and s == 1 are the default values
   } else if (toohigh) {
     result += 20; //y == 3
     result -= 1; // s == 0
@@ -333,58 +351,87 @@ byte GetWiredState () {
   return result;
 }
 
-void stabilizer () {
+void ArmStablelizer () {
   /*
     trys to hold the arm at the wire if possible.
     for more information about GetWiredState-numbers please reffer to the dokumentaion of GetWiredState.
   */
 
+  //wait for arm to stop moving
+  if ((SPWMx != SPWMxold) || (SPWMy != SPWMyold) )
+    return;
 
-  //ToDo joystiock blockd = connected flag
-  //ToDo try oce to reconnect keep bounds in mind  if fails home
+  byte WiredStateNow = GetWiredState();
 
+  if ((WiredStateNow == StabilizerCache.LastWireState) && (WiredStateNow != 111) ) {
+    StabilizerCache.LastWireState = 111; //last correction was unsuccessfull.
+    // HomeProgress = 1; //return home
+    //--> kurz buzzer an
+    digitalWrite(13, LOW);
+    DebugTimerDELETEME = millis();
+    return;
+  }
 
-  //ToDo: trete nur in aktion nachdem letzte aktion abgeschlossen oder abgebrochen wurde.
-  //entsprechen dedektiere  ob letzte aktion erfolgreich war
-  //SPWMy SPWMx
+  /*
+     //--> kurz buzzer an
+      digitalWrite(13, LOW);
+    // aus stellen
+      digitalWrite(13, HIGH);
+  */
 
-  switch (GetWiredState ()) {
-    case 000: //left limit switch triggert; no votage; upper goood --> too low and too left or left of both power lines
+  switch (WiredStateNow) {
+    case 0: // too low and too left or left of both power lines
       // --> move gently up and right, if it not helps return home
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
-    case 011: //left limit switch triggert; voltage good; upper good --> good spot, just a bit too left
+    case 11: // good spot, just a bit too left
       // move right
-      SPWMx = constrain(SPWMx - SERVOMIN * 0.01, SERVOMIN, SERVOMAX);
+      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
       break;
-    case 021: //left limit switch triggert; voltage good; upper switch  triggert --> good spot, just too left and high
+    case 21: // good spot, just too left and high
       //--> move right and a bit down
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
-    case 030: //left limit switch triggert; no voltage; upper limit switch  triggert --> missed the lines, now too high and left
-    case 130: //x good; no voltage; upper switch triggert --> missed the lines, now too high
-    case 230: //right limit switch triggert; no voltage; upper limit switch  triggert --> missed the lines, now too high and right
-      HomeProgress = 1; //return home
+    case 030: // missed the lines, now too high and left
+    case 130: // missed the lines, now too high
+    case 230: // missed the lines, now too high and right
+      // HomeProgress = 1; //return home
+      //--> kurz buzzer an
+      digitalWrite(13, LOW);
       break;
-    case 100: //x good; no voltage; upper switch goood --> we have no idea where we are, since nothing indicates
-      //try your luck and move up, if it not helps sacrifice a newborn or return home
+    case 100: // we have no idea where we are, since nothing indicates
+      //try your luck and move up, if it not helps return home
+       SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
-    case 111: //x good; voltage good; upper goood (=> y good) --> perfect spot try to stay here!
+    case 111: // perfect spot try to stay here!
       break;
-    case 122: //x good; voltage good; upper switch  triggert --> good spot, just too high
+    case 122: // good spot, just too high
       //move a bit down
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
-    case 200: //right limit switch triggert; no votage; upper goood --> too low and too right or right of both power lines
+    case 200: // too low and too right or right of both power lines
       //move gently up and left, if it not helps return home
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
-    case 211: //right limit switch triggert; voltage good; upper goood --> good spot just too right
+    case 211: // good spot just too right
       //move left
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
       break;
-    case 221: //right limit switch triggert; voltage good; upper switch  triggert --> good spot just too right and high
+    case 221: // good spot just too right and high
       //move left and a bit down
+      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
       break;
     default:
       Serial.println("[Stabbilizer] How did we get here?");
+      Serial.println(WiredStateNow);
       break;
   }
+
+  StabilizerCache.LastWireState = WiredStateNow;
 
 }
 
@@ -486,8 +533,10 @@ void HandleJoystick (int armAngle, byte armelongation) {
     } else SValyold = SValy;
     SPWMy =  map(SValyold * 10, 0, 1000, SERVOMIN + 30, SERVOMAX);
 
-    if ((SPWMy < 180) && (SPWMx < SERVOMIDDLE + 30) && (SPWMx > SERVOMIDDLE - 30))
+    if ((SPWMy < 180) && (SPWMx < SERVOMIDDLE + 30) && (SPWMx > SERVOMIDDLE - 30)) {
       HomePos = true;
+      StabilizerCache.TryReconnect = false;
+    }
 
   }
 }
