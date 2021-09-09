@@ -45,6 +45,19 @@ int SDirect = 0;// Servo value of bus direction
 int SPWMDirect;
 int SPWMDirectold;
 
+// position of last wire connection
+int XConnect, YConnect = 0;
+
+bool AutoOverheadConnect = false;
+// 255 = don't know where to connect and allredy beebed
+// 0 = nothing
+// 1 = start connecting moving to 1/2 YConnect
+// 2 = move to XConnect
+// 3 = move to full YConnect
+// 4 =
+byte OverheadConnectingState = 0;
+
+
 byte fwbw = 1; // values have to be substracet by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
 void setup() {
   pinMode(A6, INPUT); // 3:1 voltage devider
@@ -60,7 +73,7 @@ void setup() {
   pinMode(6, INPUT_PULLUP); // Pantograph too far left,right endswitch active, move right
   pinMode(5, INPUT_PULLUP); // Pantograph too far right,left endswitch active, move left
   pinMode(3, OUTPUT); // velocity control
-  analogWrite(3, 80); // set velocity
+  analogWrite(3, 70); // set velocity
   Serial.begin(9600);
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
@@ -95,23 +108,122 @@ void loop() {
         buttonDelay = millis();
       }
 
-      HandleJoystick (armAngle, strength);
+      if ((button == 0) || !((OverheadConnectingState >= 4) && (OverheadConnectingState != 255)))
+        HandleJoystick (armAngle, strength);
 
     }
     Serial.flush();
     val = "";
 
   }
-  Smove();
+
+  switch (getOverheadConnectorState ()) {// ToDo: don't overwrite user interaction
+    case 0:
+      if (SPWMyold <= SPWMy) { //ToDo: Endlagenschalter l/r beachten!
+        XConnect = SPWMxold;
+        YConnect = constrain(SPWMyold, SERVOMIN + 30, SERVOMAX);
+      }
+      break;
+
+    case 2: // not connected
+      if ((AutoOverheadConnect) && ((OverheadConnectingState > 0) && (OverheadConnectingState <= 30))) //should we try to connect?
+        HandleOverheadConnection ();
+      break;
+  }
+  
+  if ((AutoOverheadConnect) && (OverheadConnectingState > 30) && (OverheadConnectingState != 255)) {
+    HandleOverheadConnection ();
+  }
+
   if (millis() - printDelay > 1000) {
     Serial.println("wired detected    " + (String)analogRead(A6));
-    Serial.println("Accu voltage    " + (String)analogRead(A7));
+    // Serial.println("Accu voltage    " + (String)analogRead(A7));
     Serial.println("too high   " + (String)digitalRead(6));// low active
-    Serial.println("too far right   " + (String)digitalRead(5));// low active
-    Serial.println("too far left   " + (String)digitalRead(7));// low active
+    /* Serial.println("too far right   " + (String)digitalRead(5));// low active
+      Serial.println("too far left   " + (String)digitalRead(7));// low active*/
+
+    Serial.println("joytick Y: " + (String) map(SValyold * 10, 0, 1000, SERVOMIN + 30, SERVOMAX) );
+    Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
+
     Serial.println();
     printDelay = millis();
   }
+
+  Smove();
+}
+
+void HandleOverheadConnection () {
+  int TempY;
+
+  switch (OverheadConnectingState) {
+    case 1://start connecting by movint to 1/2 YConnect
+      TempY = round((float)map(YConnect, SERVOMIN + 30, SERVOMAX, 0, 1000) / 2.0);
+      SPWMy = map(TempY, 0, 1000, SERVOMIN + 30, SERVOMAX);
+
+      if (abs(SPWMy - SPWMyold) == 0)  //if we readched it next state
+        OverheadConnectingState = 2;
+
+      break;
+
+    case 2: //next step is moving to XConnect
+      SPWMx = XConnect;
+
+      if (abs(SPWMx - SPWMxold) == 0)
+        OverheadConnectingState = 3; //if we readched it next state
+
+      break;
+
+    case 3: //moving fully to YConnect
+      SPWMy = YConnect;
+
+      if (abs(SPWMy - SPWMyold) == 0)
+        OverheadConnectingState = 4; //if we readched it next state
+
+      break; //if we are lucky our last coordinates do fit and we are connected now
+
+    case 4: // cases 4->30 are reseved for help while connecting
+      //Serial.println("help me!");
+      break;
+
+    /********************** -{ deconnecting }- **********************/
+    case 31: //start deconnecting by movint to 1/2 YConnect
+      TempY = round((float)map(SPWMyold, SERVOMIN + 30, SERVOMAX, 0, 1000) / 2.0);
+      SPWMy = map(TempY, 0, 1000, SERVOMIN + 30, SERVOMAX);
+
+      //PWMOld werte statt dessen verwenden!
+
+      if (abs(SPWMy - SPWMyold) == 0) {  //if we readched it next state
+        OverheadConnectingState = 32;
+
+      }
+      break;
+
+    case 32:
+      SPWMx = SERVOMIDDLE;
+
+      if (abs(SPWMx - SPWMxold) == 0) {
+        OverheadConnectingState = 33; //if we readched it next state
+      }
+      break;
+
+    case 33:
+      SPWMy = SERVOMIN + 30;
+      if (abs(SPWMy - SPWMyold) == 0) {
+        OverheadConnectingState = 0; //if we readched it default
+        AutoOverheadConnect = false;
+      }
+      break;
+  }
+}
+
+
+byte getOverheadConnectorState () {
+  if ((analogRead(A6) > 735) && digitalRead(6)) {
+    return 0; //connected
+  } else if (analogRead(A6) > 700) {
+    return 1; //to low
+  } else
+    return 2; //not connected
 }
 
 void HandleButton(int buttonVal) {
@@ -127,14 +239,26 @@ void HandleButton(int buttonVal) {
 
       SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
       break;
-    case 1: //backward
+    case 1: //backward //ToDO resett beeb; deconnect
       if (fwbw != 2) { //if not last value was forward
-        fwbw = 0; //set movemet to backward
-        digitalWrite(8, HIGH);
-        digitalWrite(12, LOW); //start moving
+
+        if (OverheadConnectingState != 0) {
+          if (OverheadConnectingState == 255)
+            OverheadConnectingState = 0;
+          else {
+            OverheadConnectingState = 31;
+            Serial.println("start resett");
+          }
+        } else {
+
+          fwbw = 0; //set movemet to backward
+          digitalWrite(8, HIGH);
+          digitalWrite(12, LOW); //start moving
+        }
       } else {
         fwbw = 1; // else stop
         digitalWrite(12, HIGH);
+        AutoOverheadConnect = false;
       }
       break;
     case 2: // right
@@ -150,9 +274,30 @@ void HandleButton(int buttonVal) {
       break;
     case 3: //forward
       if (fwbw != 0) { //if last value was not backward (stop or forward)
-        fwbw = 2; //set movement to forward
-        digitalWrite(8, LOW);
-        digitalWrite(12, LOW); //start moving
+
+
+        if (getOverheadConnectorState ()) { // if not connected
+          if ((XConnect != 0) && (YConnect != 0)) { //if we know where to connect try to connect
+            OverheadConnectingState = 1;
+            AutoOverheadConnect = true;
+          } else { //tell the user to connect manually, but only once
+
+            if (OverheadConnectingState != 255) {
+              digitalWrite(13, LOW);
+              delay(1000);
+              digitalWrite(13, HIGH);
+              delay(10);
+              OverheadConnectingState = 255;
+            }
+          }
+        }
+
+        // if connected or already warned that not start moving
+        if ((!getOverheadConnectorState ()) || (OverheadConnectingState == 255)) {
+          fwbw = 2; //set movement to forward
+          digitalWrite(8, LOW);
+          digitalWrite(12, LOW); //start moving
+        }
       } else {
         fwbw = 1; //else stop
         digitalWrite(12, HIGH);
