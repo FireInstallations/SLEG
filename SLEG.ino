@@ -31,7 +31,7 @@ SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNEC
 #define SERVOMIDDLE 395
 #define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
 
-#define BUS_DEBUG true //Debug mode
+#define SmoveDefaultDelay 6
 
 float SValx;
 float SValxold;// Servo value derived from Joystick value for x (horizontal arm value)
@@ -42,7 +42,8 @@ int SPWMx;
 int SPWMxold;
 int SPWMy;
 int SPWMyold;
-long moveDelay;
+long SmoveDelayTime; //time countet since last call
+byte SmoveMinDelay = SmoveDefaultDelay; //minimum of millisecound between two Smove calls
 
 unsigned long buttonDelay, printDelay;
 int SDirect = 0;// Servo value of bus direction
@@ -61,6 +62,13 @@ bool FoundPos = false; // Position found
 bool HomePos = true; // Panthograph in home position
 
 byte fwbw = 1; // values have to be substracted by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
+
+/*
+   JoysitckMode describes if the joystick moves the whole bus or the arm.
+   true means the bus
+   false means the arm
+*/
+bool JoystickMode = false;
 
 void setup() {
   pinMode(A6, INPUT); // 3:1 voltage devider
@@ -93,7 +101,7 @@ void setup() {
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   buttonDelay = millis(); // wait 200ms for next button value
   printDelay = millis(); // toimer for printing
-  moveDelay = millis(); 
+  SmoveDelayTime = millis();
 
   delay(200);
 }
@@ -122,25 +130,26 @@ void loop() {
 
   }
 
-  if (BUS_DEBUG)
-    if (millis() - printDelay > 1000) {
-      
-        Serial.println("wired detected    " + (String)analogRead(A6));
-        Serial.println("Accu voltage    " + (String)analogRead(A7));
-        Serial.println("too high   " + (String)digitalRead(6));// low active
-        /* Serial.println("too far right   " + (String)digitalRead(5));// low active
-          Serial.println("too far left   " + (String)digitalRead(7));// low active*/
-      Serial.println("Wired State    " + (String)GetWiredState()  );
-        Serial.println("joystick Y: " + (String)SPWMy  );
-        Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
-        Serial.println("HomeProgress   " + (String)HomeProgress);
-        Serial.println();
-      printDelay = millis();
-    }
+  if (millis() - printDelay > 1000) {
+    /*
 
+      Serial.println("wired detected    " + (String)analogRead(A6));
+      Serial.println("Accu voltage    " + (String)analogRead(A7));
+      Serial.println("too high   " + (String)digitalRead(6));// low active
+      /* Serial.println("too far right   " + (String)digitalRead(5));// low active
+        Serial.println("too far left   " + (String)digitalRead(7));// low active*/
+    /*Serial.println("Wired State    " + (String)GetWiredState()  );
+      Serial.println("joystick Y: " + (String)SPWMy  );
+      Serial.println("last connect coordinates " + (String)XConnect + "; " + (String)YConnect);
+      Serial.println("HomeProgress   " + (String)HomeProgress);*/
+    Serial.println("JoystickMode: " + (String)JoystickMode);
+
+    Serial.println();
+    printDelay = millis();
+  }
 
   AutoWiring();
-  
+
   // store values if properly connected and disable joystick
   if (GetWiredState() == 0) {
     XConnect = SPWMxold;
@@ -149,9 +158,9 @@ void loop() {
     JoyStickEnable = false;
   }
 
-  if (millis() - moveDelay >= 6) {
+  if (millis() - SmoveDelayTime >= SmoveMinDelay) {
     Smove();
-    moveDelay = millis();
+    SmoveDelayTime = millis();
   }
 
   if (HomeProgress > 0)Homing();
@@ -161,8 +170,8 @@ void Homing() {
   switch (HomeProgress) {
 
     case 1: // start sequence move y
-      JoyStickEnable = false;
-      //BTEnable = false; //!!!becourse how joystick disabling is implemented is disables the buttons too
+      //JoyStickEnable = false; //!!!becourse how joystick disabling is implemented is disables the buttons too
+      BTEnable = false;
 
       SPWMy = 280;
       if (abs(SPWMy - SPWMyold) == 0)
@@ -180,11 +189,10 @@ void Homing() {
       SPWMy = SERVOMIN + OFFSET;
 
       if (abs(SPWMy - SPWMyold) == 0) {
-        //delay(1000);
         HomeProgress = 0;
         HomePos = true;
         JoyStickEnable = true;
-        //ButtonEnable = true;
+        ButtonEnable = true;
         BTEnable = true;
       }
       break;
@@ -229,122 +237,161 @@ byte GetWiredState () {
   bool tooleft = !digitalRead(7);
   bool tooright = !digitalRead(5);
   // the following logic enables to control search for contact and driving with contact
-  if ((voltage > 735) && toohigh && !tooleft && !tooright)
-    return 0;
-  if ((voltage > 735) && !toohigh && !tooleft && !tooright)
-    return 1;
-  if ((voltage > 735) && tooright)
-    return 2;
-  if ((voltage > 735) && tooleft)
-    return 3;
-  if ((voltage > 735) && toohigh)
-    return 4;
-  if (voltage > 735)
+
+  if (voltage > 735) {
+    if (toohigh && !tooleft && !tooright)
+      return 0;
+    if (!toohigh && !tooleft && !tooright)
+      return 1;
+    if (tooright)
+      return 2;
+    if (tooleft)
+      return 3;
+    if (toohigh)
+      return 4;
+
     return 5;
-  else
+
+  } else
     return 6; // not connected
 }
 
 void HandleButton(int buttonVal) {
 
   switch (buttonVal) {
-    case 4: //left
-      if (SDirect >= 0) { //increase angle if last angle was 0 or also a left one
-        SDirect += 10;// increase by about 10 degrees
-      } else
-        SDirect = 0;
-
-      SDirect = min(90, SDirect); //overflow
-
-      SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+    case 4: //joy drive
+      if (fwbw == 1) {
+        JoystickMode = true;
+        JoyStickEnable = true;
+      } // if we are currintly moving ignore all input.
       break;
-    case 1: //backward
-      if (fwbw == 2) {// last movement was forward
-        fwbw = 1; // stop
-        digitalWrite(12, HIGH);
-      }
-      else if (!HomePos) // if not in Homeposition Homing start
-        HomeProgress = 1;
-      else {
-        fwbw = 0; //set movemet to backward
-        digitalWrite(8, HIGH);
-        digitalWrite(12, LOW); //start moving
-      }
+    case 2: //joy arm
+      if (fwbw == 1) {
+        JoystickMode = false;
+
+      } // if we are currintly moving ignore all input.
       break;
-    case 2: // right
-      if (SDirect <= 0) { //decrease angle if last angle was 0 or also a right one
-        SDirect -= 10;// decrease by about 10 degrees
-      } else
-        SDirect = 0; //else reset to 0
 
-      SDirect = max(-90, SDirect); //overflow
-
-      SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
-
+    case 3: //Connect wire if position of wire known, not connected and also not moving
+      if ((fwbw == 1) && (FoundPos) && (GetWiredState () == 6) )
+        AutoWireProgress = 1;
       break;
-    case 3: //forward
-      if (fwbw != 0) { //if last value was not backward, but stop or forward
-        if (GetWiredState() < 6) {
 
-          fwbw = 2; //set movement to forward
-          digitalWrite(8, LOW);
-          digitalWrite(12, LOW); //start moving
-        }
-        else if (FoundPos)  //if we know, where to connect, try to connect
-          AutoWireProgress = 1;
-        else { // beep and go
-          digitalWrite(13, LOW);
-          delay(1000);
-          digitalWrite(13, HIGH);
-          delay(10);
-          fwbw = 2; //set movement to forward
-          digitalWrite(8, LOW);
-          digitalWrite(12, LOW); //start moving
-        }
-
-      } else {// if last movemant was backwards
-        fwbw = 1; //else stop
-        digitalWrite(12, HIGH);
-      }
+    case 1: //deconnect
+      //!!! TODO: Home (if connectet)
+      HomeProgress = 1;
       break;
   }
+
+  /*
+    switch (buttonVal) {
+      case 4: //left
+        if (SDirect >= 0) { //increase angle if last angle was 0 or also a left one
+          SDirect += 10;// increase by about 10 degrees
+        } else
+          SDirect = 0;
+
+        SDirect = min(90, SDirect); //overflow
+
+        SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+        break;
+      case 1: //backward
+        if (fwbw == 2) {// last movement was forward
+          fwbw = 1; // stop
+          digitalWrite(12, HIGH);
+        }
+        else if (!HomePos) // if not in Homeposition Homing start
+          HomeProgress = 1;
+        else {
+          fwbw = 0; //set movemet to backward
+          digitalWrite(8, HIGH);
+          digitalWrite(12, LOW); //start moving
+        }
+        break;
+      case 2: // right
+        if (SDirect <= 0) { //decrease angle if last angle was 0 or also a right one
+          SDirect -= 10;// decrease by about 10 degrees
+        } else
+          SDirect = 0; //else reset to 0
+
+        SDirect = max(-90, SDirect); //overflow
+
+        SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+
+        break;
+      case 3: //forward
+        if (fwbw != 0) { //if last value was not backward, but stop or forward
+          if (GetWiredState() < 6) {
+
+            fwbw = 2; //set movement to forward
+            digitalWrite(8, LOW);
+            digitalWrite(12, LOW); //start moving
+          }
+          else if (FoundPos)  //if we know, where to connect, try to connect
+            AutoWireProgress = 1;
+          else { // beep and go
+            digitalWrite(13, LOW);
+            delay(1000);
+            digitalWrite(13, HIGH);
+            delay(10);
+            fwbw = 2; //set movement to forward
+            digitalWrite(8, LOW);
+            digitalWrite(12, LOW); //start moving
+          }
+
+        } else {// if last movemant was backwards
+          fwbw = 1; //else stop
+          digitalWrite(12, HIGH);
+        }
+        break;
+    }*/
 }
 
 void HandleJoystick (int armAngle, byte armelongation) {
-  // compute x and y
-  SValx = armelongation * cos(float(armAngle * PI / 180));
-  SValy = armelongation * sin(float(armAngle * PI / 180));
-  // clear stored values, if Joy stick has nonzero values
-  if (SValx != 0 || SValy != 0) {
-    XConnect = 0;
-    YConnect = 0;
-    FoundPos = false;
-    HomePos = false;
-  } else if ((SValx == 0) && (SValy == 0))
+  /*
+     The Joystick dictates the movement of the hole bus (drive) OR
+     of the wire connector arm.
+     If JoystickMode happend to be true it is drive, if false arm.
+  */
 
-    if ((SValy <= 10) && (armAngle != 0)) return;// to avoid misssending from Joy Stick
+  if (JoystickMode) { // drive
+    //!!! ToDo: Peep wenn losfahren und kein autoconnect Wert bekannt.
+    //!!! ToDo: vergesse Autoconnect Positionen wenn losfahren nach abdrahten
+  } else { // arm
 
-  // gliding avarage
-  SValxold = 0.9 * SValxold + 0.1 * SValx;
-  if (SValxold <= 0)
-    SPWMx = map(SValxold * 10, 0, -1000, SERVOMIDDLE, SERVOMAX);
-  else
-    SPWMx = map(SValxold * 10, 1000, 0, SERVOMIN, SERVOMIDDLE);
+    // compute x and y
+    SValx = armelongation * cos(float(armAngle * PI / 180));
+    SValy = armelongation * sin(float(armAngle * PI / 180));
+    // clear stored values, if Joy stick has nonzero values
+    if (SValx != 0 || SValy != 0) {
+      XConnect = 0;
+      YConnect = 0;
+      FoundPos = false;
+      HomePos = false;
+    } else if ((SValx == 0) && (SValy == 0))
+
+      if ((SValy <= 10) && (armAngle != 0)) return;// to avoid misssending from Joy Stick
+
+    // gliding avarage
+    SValxold = 0.9 * SValxold + 0.1 * SValx;
+    if (SValxold <= 0)
+      SPWMx = map(SValxold * 10, 0, -1000, SERVOMIDDLE, SERVOMAX);
+    else
+      SPWMx = map(SValxold * 10, 1000, 0, SERVOMIN, SERVOMIDDLE);
 
 
+    if (SValy < 0) SValy = 0;// use only upper half of Joystickpad
 
+    if (SValy != 0) {
+      // gliding avarage as far as not return to zero is adviced
+      SValyold = 0.9 * SValyold + 0.1 * SValy;
+    } else SValyold = SValy;
+    SPWMy =  map(SValyold * 10, 0, 1000, SERVOMIN + 30, SERVOMAX);
 
-  if (SValy < 0) SValy = 0;// use only upper half of Joystickpad
+    if ((SPWMy < 180) && (SPWMx < SERVOMIDDLE + 30) && (SPWMx > SERVOMIDDLE - 30))
+      HomePos = true;
 
-  if (SValy != 0) {
-    // gliding avarage as far as not return to zero is adviced
-    SValyold = 0.9 * SValyold + 0.1 * SValy;
-  } else SValyold = SValy;
-  SPWMy =  map(SValyold * 10, 0, 1000, SERVOMIN + 30, SERVOMAX);
-
-  if ((SPWMy < 180) && (SPWMx < SERVOMIDDLE + 30) && (SPWMx > SERVOMIDDLE - 30))
-    HomePos = true;
-
+  }
 }
 
 void Smove() {
@@ -361,20 +408,28 @@ void Smove() {
   if (SPWMy > SPWMyold) {
     SPWMyold++;
     pwm.setPWM(4, 0, SPWMyold);
-    /*
-        if (SPWMy - SPWMyold < 20)
-          delay(3);
-        if (SPWMy - SPWMyold < 10)
-          delay(7);*/
+
+    if (SPWMy - SPWMyold < 20) {
+      if (SPWMy - SPWMyold < 10) {
+        SmoveMinDelay = SmoveDefaultDelay + 7;
+      } else
+        SmoveMinDelay = SmoveDefaultDelay + 3;
+    }
+    else
+      SmoveMinDelay = SmoveDefaultDelay;
 
   } else if (SPWMy < SPWMyold) {
     SPWMyold--;
     pwm.setPWM(4, 0, SPWMyold);
-    /*
-        if (SPWMyold - SPWMy < 20)
-          delay(3);
-        if (SPWMyold - SPWMy < 10)
-          delay(7);*/
+
+    if (SPWMyold - SPWMy < 20) {
+      if (SPWMyold - SPWMy < 10) {
+        SmoveMinDelay = SmoveDefaultDelay + 7;
+      } else
+        SmoveMinDelay = SmoveDefaultDelay + 3;
+    }
+    else
+      SmoveMinDelay = SmoveDefaultDelay;
   }
 
   //driving  direction
