@@ -1,9 +1,12 @@
-/*
-   connect VRX to A0
-   connect VRY to A1
+/*This program controls the SLEG via a bluetooth joystick (use it in landscape mode)
+   it is equipped with 3 servos, two for the arm control and one for directing the bus
+   the bus electronics is removed, forward and backward movement is cotrolled by relays
+   for details refer to the electronic scheme
+
    servo 0 x
    servo 4 y
-    -SCL=A5
+   servo 8 direct
+    -SCL=A5     (PCA9685)
     -SDA=A4
 
   Configure with AT Commands as described in https://www.instructables.com/AT-command-mode-of-HC-05-Bluetooth-module/
@@ -28,18 +31,33 @@ SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNEC
 #define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
 
 int SValx;
+int SValxold;// Servo value derived from Joystick value for x (horizontal arm value)
 int SValy;
-int SPWMx = map(SValx, -100, 100, SERVOMIN, SERVOMAX);
-int SPWMy = map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
+int SValyold;// Servo value derived from Joystick value for y (vertical arm value)
+// Servo x and y values for the PWM signal
+int SPWMx;
+int SPWMxold;
+int SPWMy;
+int SPWMyold;
 
 unsigned long buttonDelay;
-int driveAngle = 0;
-bool resetDriveAngle = false;
-byte fwbb = 1; // values have to be substracet by 1. -1 -> bus moves backwards. 0 -> bus stands. 1 -> bus moves forwads.
+int SDirect = 0;// Servo value of bus direction
+bool resetSDirect = false;
+byte fwbw = 1; // values have to be substracet by 1. -1 -> bus moves backward. 0 -> bus stopps. 1 -> bus moves forward.
 
 void setup() {
-  pinMode(A0, INPUT);
-  pinMode(A1, INPUT);
+  pinMode(A6, INPUT); // 3:1 voltage devider
+  pinMode(A7, INPUT); // accu voltage
+  pinMode(8, OUTPUT); // forward low/ backward high
+  pinMode(12, OUTPUT); // move low/ stop high
+  digitalWrite(12, HIGH); // bus is stopped
+  pinMode(13, OUTPUT); // if wired low
+  digitalWrite(9, HIGH); // not wired
+  pinMode(9, OUTPUT); // if load accu low
+  digitalWrite(9, HIGH); // load is off
+  pinMode(7, INPUT_PULLUP); // Pantograph too high, lower endswitch active, move down
+  pinMode(6, INPUT_PULLUP); // Pantograph too far left,right endswitch active, move right
+  pinMode(5, INPUT_PULLUP); // Pantograph too far right,left endswitch active, move left
   Serial.begin(9600);
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
@@ -48,17 +66,19 @@ void setup() {
   SValy = 0;
   SPWMx = map(SValx, -100, 100, SERVOMIN, SERVOMAX);
   SPWMy = map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
-
+  SPWMxold = SPWMx;
+  SPWMyold = SPWMy;
+  Serial.print((String)SPWMy + "    ");
+  Serial.println(SPWMyold);
   BTSerial.begin(9600);  // HC-05 speed set in AT command mode
   buttonDelay = millis(); // wait 200ms for next button value
-  pinMode(8, OUTPUT); // forward / backward
-  pinMode(12, OUTPUT); //move / stop
+
   delay(200);
 }
 void loop() {
   if (BTSerial.available()) {
     String val = BTSerial.readStringUntil('#');
-    Serial.println(BTSerial.read());
+    //Serial.println(BTSerial.read());
     // cited from the description in "Arduino Joystick" App
     if (val.length() == 7) {
       int armAngle = val.substring(0, 3).toInt();
@@ -71,89 +91,85 @@ void loop() {
       }
 
       HandleJoystick (armAngle, strength);
+
     }
     Serial.flush();
     val = "";
-  } else {
-    float x = 0.95 * SPWMx + 0.05 * map(0, 100, -100, SERVOMIN, SERVOMAX);
-    SPWMx = round(x);
-    pwm.setPWM(0, 0, SPWMx);
+    } else {
+    // slowly return drive direction back to 0.
+    if ((resetSDirect) && (SDirect != 0)) {
+      SDirect *= 0.9;
+      SDirect = (int)(SDirect / 10.0) * 10;
 
-    float y = 0.95 * SPWMy + 0.05 * map(0, 0, 100, SERVOMIN + 30, SERVOMAX);
-    SPWMy = round(y);
-    pwm.setPWM(4, 0, SPWMy);
+      int SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+      pwm.setPWM(8, 0, SPWMDirect);
 
-    // slowly return drivement direction back to 0.
-    if ((resetDriveAngle) && (driveAngle != 0)) {
-      driveAngle *= 0.9;
-      driveAngle = (int)(driveAngle / 10.0) * 10;
-
-      int SdriveAngle = round(map(driveAngle, -90, 90, SERVOMIN, SERVOMAX));
-      pwm.setPWM(8, 0, SdriveAngle);
-
-      Serial.println("driveAngle: " + (String)driveAngle);
+      Serial.println("SDirect: " + (String)SDirect);
     }
-  }
-
-  delay(50);
+    }
+  
+  Smove();
+  Serial.print((String)SPWMy + "    ");
+  Serial.println(SPWMyold);
+  //delay(50);
 }
 
 void HandleButton(int buttonVal) {
-  int SdriveAngle; // int output of drivement angle
+  int SPWMDirect; // int output of drivement angle
 
   switch (buttonVal) {
-    case 1: //left
-      if (driveAngle >= 0) { //increase angle if last angle was 0 or also a left one
-        driveAngle += 10;
-        resetDriveAngle = false;
+    case 4: //left
+      if (SDirect >= 0) { //increase angle if last angle was 0 or also a left one
+        SDirect += 10;// increase by about 10 degrees
+        resetSDirect = false;
       } else
-        resetDriveAngle = true;
+        resetSDirect = true;
 
-      driveAngle = min(90, driveAngle); //overflow
+      SDirect = min(90, SDirect); //overflow
 
-      SdriveAngle = round(map(driveAngle, -90, 90, SERVOMIN, SERVOMAX));
-      pwm.setPWM(8, 0, SdriveAngle);
+      SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+      pwm.setPWM(8, 0, SPWMDirect);
 
-      Serial.println("driveAngle: " + (String)driveAngle);
+      Serial.println("SDirect: " + (String)SDirect);
       break;
-    case 2: //backward
-      if (fwbb != 2) { //if not lat value was forward
-        fwbb = 0; //set movemet to backward
-        digitalWrite(8, LOW);
-        digitalWrite(12, HIGH); //start moving
-      } else {
-        fwbb = 1; // else stop
-        digitalWrite(12, LOW);
-      }
-
-      Serial.println("fwbb: " + (String)(fwbb - 1));
-      break;
-    case 3: // right
-      if (driveAngle <= 0) { //decrease angle if last angle was 0 or also a right one
-        driveAngle -= 10;
-        resetDriveAngle = false;
-      } else
-        resetDriveAngle = true; //else reset to 0
-
-      driveAngle = max(-90, driveAngle); //overflow
-
-      SdriveAngle = round(map(driveAngle, -90, 90, SERVOMIN, SERVOMAX));
-      pwm.setPWM(8, 0, SdriveAngle);
-
-      Serial.println("driveAngle: " + (String)driveAngle);
-
-      break;
-    case 4: //foreward
-      if (fwbb != 0) { //if last value was not backward (stop or forward)
-        fwbb = 2; //set movement to forward
+    case 1: //backward
+      if (fwbw != 2) { //if not last value was forward
+        fwbw = 0; //set movemet to backward
         digitalWrite(8, HIGH);
-        digitalWrite(12, HIGH); //start moving
+        digitalWrite(12, LOW); //start moving
       } else {
-        fwbb = 1; //else stop
-        digitalWrite(12, LOW);
+        fwbw = 1; // else stop
+        digitalWrite(12, HIGH);
       }
 
-      Serial.println("fwbb: " + (String)(fwbb - 1));
+      Serial.println("fwbw: " + (String)(fwbw - 1));
+      break;
+    case 2: // right
+      if (SDirect <= 0) { //decrease angle if last angle was 0 or also a right one
+        SDirect -= 10;// decrease by about 10 degrees
+        resetSDirect = false;
+      } else
+        resetSDirect = true; //else reset to 0
+
+      SDirect = max(-90, SDirect); //overflow
+
+      SPWMDirect = round(map(SDirect, -90, 90, SERVOMIN, SERVOMAX));
+      pwm.setPWM(8, 0, SPWMDirect);
+
+      Serial.println("SDirect: " + (String)SDirect);
+
+      break;
+    case 3: //forward
+      if (fwbw != 0) { //if last value was not backward (stop or forward)
+        fwbw = 2; //set movement to forward
+        digitalWrite(8, LOW);
+        digitalWrite(12, LOW); //start moving
+      } else {
+        fwbw = 1; //else stop
+        digitalWrite(12, HIGH);
+      }
+
+      Serial.println("fwbw: " + (String)(fwbw - 1));
       break;
   }
 }
@@ -162,17 +178,46 @@ void HandleJoystick (int armAngle, byte armspeed) {
   // compute x and y
   SValx = armspeed * cos(float(armAngle * PI / 180));
   SValy = armspeed * sin(float(armAngle * PI / 180));
+  //Serial.println("SValx= " + (String)SValx + "SValxold= " + (String)SValxold + "   SValy= " + (String)SValy);
   if (SValy < 0) SValy = 0;
+  if (SValx != SValxold) {
+    //Serial.println("xxx");
 
-  float x = 0.9 * SPWMx + 0.1 * map(SValx, 100, -100, SERVOMIN, SERVOMAX);
+    SPWMx = map(SValx, 100, -100, SERVOMIN, SERVOMAX);
+    SPWMx = round(min(SPWMx, SERVOMAX - 60)); //don't hit the screw
+    SValxold = SValx;
+  }
+  if (SValy != SValyold) {
+    Serial.println("yyy");
 
-  SPWMx = round(min(x, SERVOMAX - 60)); //don't hit the screw
-  pwm.setPWM(0, 0, SPWMx);
+    SPWMy =  map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
+    SValyold = SValy;
+  }
+}
 
-  float y = 0.9 * SPWMy + 0.1 * map(SValy, 0, 100, SERVOMIN + 30, SERVOMAX);
-  SPWMy = round(y);
-  pwm.setPWM(4, 0, SPWMy);
+void Smove( void) {
 
-  Serial.println("x= " + (String)x + "   y= " + (String)y);
+  if (SPWMx > SPWMxold) {
+    SPWMxold++;
+    pwm.setPWM(0, 0, SPWMxold);
+    delay(10);
+
+    } else if (SPWMx < SPWMxold) {
+    SPWMxold--;
+    pwm.setPWM(0, 0, SPWMxold);
+    delay(10);
+
+    }
+  if (SPWMy > SPWMyold) {
+    SPWMyold++;
+    pwm.setPWM(4, 0, SPWMyold);
+    delay(10);
+
+  } else if (SPWMy < SPWMyold) {
+    SPWMyold--;
+    pwm.setPWM(4, 0, SPWMyold);
+    delay(10);
+
+  }
 
 }
