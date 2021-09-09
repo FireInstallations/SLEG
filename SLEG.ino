@@ -1,67 +1,53 @@
-#include <Servo.h>
-const int servoPin1 = 8;
-const int servoPin2 = 9;
-const int joyPinH = 3;
-const int joyPinV = 4;
+/*
+   connect VRX to A0
+   connect VRY to A1
+   servo 0 x
+   servo 4 y
+    -SCL=A5
+    -SDA=A4
+*/
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+#define SERVOMIN 136
+#define SERVOMAX 539
+#define SERVOMIDDLE 337
+#define YStickMiddlex 487 // derived from experiment
+#define YStickMiddley 531
+#define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
 
-boolean colliding = false;
+int SValx;
+int SValy;
+int SPWMx = map(SValx, 0, 1023, SERVOMIN, SERVOMAX);
+int SPWMy = map(SValy, YStickMiddley, 1023, SERVOMIN + 30, SERVOMAX);
 
-int lastStep = 1;
-int grad = 0;
-int maxGrad = 45;
-
-int servoVal;
-
-Servo servo1;
-Servo servo2;
 void setup() {
-  servo1.attach(servoPin1);
-  servo2.attach(servoPin2);
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
   Serial.begin(9600);
-  servo1.write(90);
+  pwm.begin();
+  pwm.setOscillatorFrequency(27000000);
+  pwm.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates
+  SValx = analogRead(A0);
+  SValy = analogRead(A1);
+  SPWMx = map(SValx, 0, 1023, SERVOMIN, SERVOMAX);
+  SPWMy = map(SValy, YStickMiddley, 1023, SERVOMIN + 30, SERVOMAX);
   delay(200);
 }
 void loop() {
   joyStick();
-  //such();
+  Serial.println("x  " + (String)SValx + "   y  " + (String)SValy);
+  delay(50);
 }
 void joyStick() {
-  servoVal = analogRead(joyPinH);
-  servoVal = map(servoVal, 0, 1023, 0, 180);
-  servo1.write(servoVal);
-  servoVal = analogRead(joyPinV);
-  servoVal = map(servoVal, 0, 1023, 180, 0);
-  servo2.write(servoVal);
-  delay(35);
+  SValx = analogRead(A0);
+  float x = 0.9 * SPWMx + 0.1 * map(SValx, 0, 1023, SERVOMIN, SERVOMAX);
+  SPWMx = (int)x;
+  pwm.setPWM(0, 0, SPWMx);
+  SValy = analogRead(A1);
+  if (SValy < YStickMiddley)
+    SValy = YStickMiddley;
+  float y = 0.9 * SPWMy + 0.1 * map(SValy, YStickMiddley, 1023, SERVOMIN + 30, SERVOMAX);
+  SPWMy = (int)y;
+  pwm.setPWM(4, 0, SPWMy);
 }
-void test() {
-  int in = analogRead(A0);
-  delay(100);
-  if (in > 500) {
-    colliding = true;
-  } else {
-    colliding = false;
-  }
-}
-void such() {
-  test();
-  int waitTime = 100;
-  if (colliding == true) {
-    return;
-  }
-  int mitte = 90;
-  servo1.write(mitte + grad);
-  lastStep = 1;
-  test();
-  if (colliding == true) {
-    return;
-  }
-  lastStep = -1;
-  delay(waitTime);
-  grad += lastStep;
-  if (grad >= maxGrad || grad <= -maxGrad) {
-    grad = 0;
-    lastStep *= -1;
-  }
-}
-
