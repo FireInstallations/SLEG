@@ -33,12 +33,6 @@ SoftwareSerial BTSerial(10, 11); // CONNECT BT RX PIN TO ARDUINO 11 PIN | CONNEC
 
 #define SmoveDefaultDelay 6
 
-class WireStateStabilizerCache {
-  public:
-    byte LastWireState;
-    bool TryReconnect;
-};
-
 float SValx;
 float SValxold;// Servo value derived from Joystick value for x (horizontal arm value)
 float SValy;
@@ -56,8 +50,6 @@ int SDirect = 0;// Servo value of bus direction
 int SPWMDirect;
 int SPWMDirectold;
 
-unsigned long DebugTimerDELETEME;
-
 // position of last wire connection
 int XConnect = 0, YConnect = 0;
 
@@ -69,8 +61,11 @@ bool BTEnable = true; // Enable Blue tooth
 bool FoundPos = false; // Position found
 bool HomePos = true; // Panthograph in home position
 bool IsDriving = false; // are the weels moving?
+unsigned long DriveLastJoysticktime; // Time since last joystick value while driving
 
-WireStateStabilizerCache StabilizerCache;
+byte StablelizerLastWireState; // if the last state was the same as the state now the last correction failed
+bool StablelizerTryReconnect; //if the stablizer should activate
+byte StablelizerCounter; //counts how many failed attemts of correcting the arm where made
 
 /*
    JoysitckMode describes if the joystick moves the whole bus or the arm.
@@ -107,25 +102,19 @@ void setup() {
   SPWMDirect = round(map(0, -90, 90, SERVOMIN, SERVOMAX));
   SPWMDirectold = SPWMDirect;
 
-  StabilizerCache.TryReconnect = false;
-  StabilizerCache.LastWireState = 111;
+  StablelizerTryReconnect = false;
+  StablelizerLastWireState = 111;
+  StablelizerCounter = 0;
 
   pinMode(4, INPUT); // High if BT connected
   BTSerial.begin(115200);  // HC-05 speed set in AT command mode
   printDelay = millis(); // timer for printing
-  SmoveDelayTime = millis();
-  DebugTimerDELETEME = millis();
-
+  SmoveDelayTime = millis(); //time between Servo actions
+  DriveLastJoysticktime = millis(); //time until app signal is assumed to be lost
 
   delay(200);
 }
 void loop() {
-
-  if (millis() - DebugTimerDELETEME > 5) {
-    // aus stellen
-    digitalWrite(13, HIGH);
-  }
-
   if (BTSerial.available() && BTEnable) { //!!!disables button and joystick, control via app  disabled!
     String val = BTSerial.readStringUntil('#');
     // cited from the description in "Arduino Joystick" App
@@ -149,6 +138,10 @@ void loop() {
     Serial.flush();
     val = "";
 
+  } else  if ((IsDriving) && ( millis() - DriveLastJoysticktime > 300)) {
+    //sometimes the bluetooth connection looses enough values so the bus doens't stop
+    //stop the bus
+    HandleJoystick (0, 0);
   }
 
   if (millis() - printDelay > 1000) {
@@ -177,7 +170,7 @@ void loop() {
     if (!JoystickMode) // only disable the joystick if its currintly controling the arm.
       JoyStickEnable = false;
 
-    StabilizerCache.TryReconnect = true;
+    StablelizerTryReconnect = true;
   }
 
   if (millis() - SmoveDelayTime >= SmoveMinDelay) {
@@ -189,7 +182,7 @@ void loop() {
       Serial.println("Awww man, I lost control again! :/");
     }
 
-    if (StabilizerCache.TryReconnect /*&& (IsDriving)*/) {
+    if (StablelizerTryReconnect && (IsDriving)) {
       ArmStablelizer ();
     }
 
@@ -204,7 +197,13 @@ void Homing() {
   switch (HomeProgress) {
 
     case 1: // start sequence move y
-      BTEnable = false;
+      StablelizerTryReconnect = false;
+      
+      if (!JoystickMode) { // disable all BT-input if Joystick is controling the arm
+        BTEnable = false;
+      } else {
+        ButtonEnable = false; // disable just button input if we are currintly driving so we don't lock the bus movement
+      }
 
       SPWMy = 280;
       if (abs(SPWMy - SPWMyold) == 0)
@@ -224,8 +223,12 @@ void Homing() {
       if (abs(SPWMy - SPWMyold) == 0) {
         HomeProgress = 0;
         HomePos = true;
-        StabilizerCache.TryReconnect = false;
-        BTEnable = true;
+        if (!JoystickMode) { // enable all BT-input if Joystick is controling the arm
+          BTEnable = true;
+          Serial.flush(); // clear all the old values.
+        } else {
+          ButtonEnable = true; // enable just button input if we are currintly driving
+        }
 
         Serial.flush();
       }
@@ -361,69 +364,66 @@ void ArmStablelizer () {
   if ((SPWMx != SPWMxold) || (SPWMy != SPWMyold) )
     return;
 
+  //cach wirestate
   byte WiredStateNow = GetWiredState();
 
-  if ((WiredStateNow == StabilizerCache.LastWireState) && (WiredStateNow != 111) ) {
-    StabilizerCache.LastWireState = 111; //last correction was unsuccessfull.
-    // HomeProgress = 1; //return home
-    //--> kurz buzzer an
-    digitalWrite(13, LOW);
-    DebugTimerDELETEME = millis();
-    return;
-  }
+  // was the last correction successfull?
+  if ((WiredStateNow == StablelizerLastWireState) && (WiredStateNow != 111)) {
+    if (StablelizerCounter <= 100) //no but maby the next will?
+      StablelizerCounter++;
+    else {
+      StablelizerLastWireState = 111; //last 100 correction where unsuccessfull.
+      HomeProgress = 1; //return home
+      StablelizerCounter = 0;
 
-  /*
-     //--> kurz buzzer an
-      digitalWrite(13, LOW);
-    // aus stellen
-      digitalWrite(13, HIGH);
-  */
+      if (!JoystickMode) //reenable joystick
+        JoyStickEnable = true;
+    }
+  }
 
   switch (WiredStateNow) {
     case 0: // too low and too left or left of both power lines
       // --> move gently up and right, if it not helps return home
-      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
-      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     case 11: // good spot, just a bit too left
       // move right
-      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
       break;
     case 21: // good spot, just too left and high
       //--> move right and a bit down
-      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
-      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     case 030: // missed the lines, now too high and left
     case 130: // missed the lines, now too high
     case 230: // missed the lines, now too high and right
-      // HomeProgress = 1; //return home
-      //--> kurz buzzer an
-      digitalWrite(13, LOW);
+      HomeProgress = 1; //return home
       break;
     case 100: // we have no idea where we are, since nothing indicates
       //try your luck and move up, if it not helps return home
-       SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     case 111: // perfect spot try to stay here!
       break;
     case 122: // good spot, just too high
       //move a bit down
-      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     case 200: // too low and too right or right of both power lines
       //move gently up and left, if it not helps return home
-      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
-      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy + (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     case 211: // good spot just too right
       //move left
-      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
       break;
     case 221: // good spot just too right and high
       //move left and a bit down
-      SPWMx = constrain(SPWMx + (SERVOMAX - SERVOMIN) * 0.01, SERVOMIN, SERVOMAX);
-      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.01, SERVOMIN + 30, SERVOMAX);
+      SPWMx = constrain(SPWMx - (SERVOMAX - SERVOMIN) * 0.06, SERVOMIN, SERVOMAX);
+      SPWMy = constrain(SPWMy - (SERVOMAX - SERVOMIN - 30) * 0.03, SERVOMIN + 30, SERVOMAX);
       break;
     default:
       Serial.println("[Stabbilizer] How did we get here?");
@@ -431,7 +431,7 @@ void ArmStablelizer () {
       break;
   }
 
-  StabilizerCache.LastWireState = WiredStateNow;
+  StablelizerLastWireState = WiredStateNow;
 
 }
 
@@ -488,13 +488,18 @@ void HandleJoystick (int armAngle, byte armelongation) {
   IsDriving = false;
 
   if (JoystickMode) { // drive
-    SPWMDirect = map(SValx, 100, -100, SERVOMIN, SERVOMAX);
+    //the joystick values reach from -100 to 100 but ousing the full range makes the bus hard to control
+    SPWMDirect = map(SValx, 140, -140, SERVOMIN, SERVOMAX);
 
-    int velocity = map(abs(SValy), 0, 100, 60, 180);
+    //the bus would be able to drive faster --> 60 up to 255 but not only the bus gets very hard to control
+    //but also the arm servo would be to slow to move aloung.
+    int velocity = map(abs(SValy), 0, 100, 60, 110);
     analogWrite(3, velocity); // set velocity
 
-    if (velocity > 60)
+    if (velocity > 60) {
       IsDriving = true;
+      DriveLastJoysticktime = millis();
+    }
 
     if (SValy > 0) { //forward
       digitalWrite(8, LOW);
@@ -535,7 +540,7 @@ void HandleJoystick (int armAngle, byte armelongation) {
 
     if ((SPWMy < 180) && (SPWMx < SERVOMIDDLE + 30) && (SPWMx > SERVOMIDDLE - 30)) {
       HomePos = true;
-      StabilizerCache.TryReconnect = false;
+      StablelizerTryReconnect = false;
     }
 
   }
